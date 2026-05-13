@@ -3,7 +3,6 @@ from __future__ import annotations
 import argparse
 import json
 import math
-import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -12,27 +11,11 @@ import pandas as pd
 import tensorflow as tf
 from PIL import Image as PILImage
 from PIL import ImageDraw, ImageFont
-from reportlab.lib import colors
-from reportlab.lib.pagesizes import A4
-from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
-from reportlab.lib.units import cm
-from reportlab.pdfbase import pdfmetrics
-from reportlab.pdfbase.ttfonts import TTFont
-from reportlab.platypus import (
-    Image,
-    PageBreak,
-    Paragraph,
-    SimpleDocTemplate,
-    Spacer,
-    Table,
-    TableStyle,
-)
 
 
 ROOT = Path(__file__).resolve().parents[1]
 DATA_PATH = ROOT / "data" / "TRAIN2.xlsx"
 OUTPUT_DIR = ROOT / "outputs"
-DEFAULT_GITHUB_URL = "https://github.com/<your-username>/Final_score_prediction"
 
 
 @dataclass(frozen=True)
@@ -99,11 +82,19 @@ def fit_tensorflow_graph(
         ],
         name="final_score_tensorflow_graph",
     )
-    graph.compile(
-        optimizer=tf.keras.optimizers.SGD(learning_rate=learning_rate),
-        loss=tf.keras.losses.MeanSquaredError(),
-    )
-    history = graph.fit(x_train, y_train, epochs=epochs, batch_size=len(x_train), verbose=0)
+    optimizer = tf.keras.optimizers.SGD(learning_rate=learning_rate)
+    loss_fn = tf.keras.losses.MeanSquaredError()
+    x_tensor = tf.convert_to_tensor(x_train)
+    y_tensor = tf.convert_to_tensor(y_train)
+    losses: list[float] = []
+
+    for _ in range(epochs):
+        with tf.GradientTape() as tape:
+            y_hat = graph(x_tensor, training=True)
+            loss = loss_fn(y_tensor, y_hat)
+        gradients = tape.gradient(loss, graph.trainable_variables)
+        optimizer.apply_gradients(zip(gradients, graph.trainable_variables))
+        losses.append(float(loss.numpy()))
 
     dense = graph.get_layer("linear_output")
     kernel, bias_array = dense.get_weights()
@@ -114,7 +105,6 @@ def fit_tensorflow_graph(
 
     slope = weight / feature_std
     intercept = bias - (weight * feature_mean / feature_std)
-    losses = [float(loss) for loss in history.history["loss"]]
     return LinearModel(
         intercept=float(intercept),
         slope=float(slope),
@@ -369,206 +359,14 @@ def save_computation_graph(output_path: Path) -> None:
     note_font = load_plot_font(15)
     draw.text(
         (35, 540),
-        "TensorFlow tu dong tinh gradient bang autodiff va cap nhat tham so bang SGD optimizer",
+        "Batch Gradient Descent: tinh gradient tren toan bo tap train roi cap nhat tham so mot lan moi epoch",
         font=note_font,
         fill="#111827",
     )
     img.save(output_path)
 
 
-def get_github_url() -> str:
-    try:
-        result = subprocess.run(
-            ["git", "remote", "get-url", "origin"],
-            cwd=ROOT,
-            check=True,
-            capture_output=True,
-            text=True,
-        )
-    except (subprocess.CalledProcessError, FileNotFoundError):
-        return DEFAULT_GITHUB_URL
-
-    url = result.stdout.strip()
-    if url.startswith("git@github.com:"):
-        url = "https://github.com/" + url.removeprefix("git@github.com:").removesuffix(".git")
-    elif url.endswith(".git"):
-        url = url[:-4]
-    return url or DEFAULT_GITHUB_URL
-
-
-def register_fonts() -> str:
-    candidates = [
-        Path("C:/Windows/Fonts/arial.ttf"),
-        Path("C:/Windows/Fonts/calibri.ttf"),
-        Path("C:/Windows/Fonts/segoeui.ttf"),
-    ]
-    for font_path in candidates:
-        if font_path.exists():
-            pdfmetrics.registerFont(TTFont("ReportFont", str(font_path)))
-            return "ReportFont"
-    return "Helvetica"
-
-
-def make_report(
-    output_path: Path,
-    df: pd.DataFrame,
-    train_df: pd.DataFrame,
-    test_df: pd.DataFrame,
-    model: LinearModel,
-    metrics: dict[str, float],
-    regression_plot: Path,
-    residual_plot: Path,
-    loss_plot: Path,
-    computation_graph: Path,
-    github_url: str,
-) -> None:
-    font_name = register_fonts()
-    styles = getSampleStyleSheet()
-    styles.add(ParagraphStyle(name="BodyVN", parent=styles["BodyText"], fontName=font_name, fontSize=10.5, leading=15))
-    styles.add(ParagraphStyle(name="TitleVN", parent=styles["Title"], fontName=font_name, fontSize=18, leading=22))
-    styles.add(ParagraphStyle(name="H1VN", parent=styles["Heading1"], fontName=font_name, fontSize=14, leading=18))
-    styles.add(ParagraphStyle(name="H2VN", parent=styles["Heading2"], fontName=font_name, fontSize=12, leading=16))
-
-    doc = SimpleDocTemplate(
-        str(output_path),
-        pagesize=A4,
-        rightMargin=1.8 * cm,
-        leftMargin=1.8 * cm,
-        topMargin=1.6 * cm,
-        bottomMargin=1.6 * cm,
-        title="Thuyet minh du bao diem cuoi ky",
-    )
-    body = styles["BodyVN"]
-    h1 = styles["H1VN"]
-    h2 = styles["H2VN"]
-
-    graph_formula = f"z = (x - {model.feature_mean:.4f}) / {model.feature_std:.4f}; ŷ = {model.graph_bias:.4f} + {model.graph_weight:.4f}z"
-    formula = f"ŷ = {model.intercept:.4f} + {model.slope:.4f}x"
-    clipped_formula = f"final_pred = min(10, max(0, {model.intercept:.4f} + {model.slope:.4f} * midterm))"
-
-    story = [
-        Paragraph("Thuyết minh chương trình dự đoán điểm cuối kỳ", styles["TitleVN"]),
-        Spacer(1, 0.25 * cm),
-        Paragraph(f"<b>Link GitHub:</b> {github_url}", body),
-        Spacer(1, 0.35 * cm),
-        Paragraph("1. Mục tiêu và dữ liệu", h1),
-        Paragraph(
-            "Bài toán cần dự đoán điểm cuối kỳ của sinh viên dựa trên điểm giữa kỳ của cùng một môn học. "
-            f"Dataset dùng trong chương trình là file <b>{DATA_PATH.name}</b>, gồm {len(df)} dòng dữ liệu với hai cột: "
-            "<b>midterm</b> là điểm giữa kỳ và <b>final</b> là điểm cuối kỳ.",
-            body,
-        ),
-        Spacer(1, 0.2 * cm),
-        make_table(
-            [
-                ["Số mẫu", len(df)],
-                ["Số mẫu huấn luyện", len(train_df)],
-                ["Số mẫu kiểm tra", len(test_df)],
-                ["Điểm giữa kỳ nhỏ nhất/lớn nhất", f"{df['midterm'].min():.2f} / {df['midterm'].max():.2f}"],
-                ["Điểm cuối kỳ nhỏ nhất/lớn nhất", f"{df['final'].min():.2f} / {df['final'].max():.2f}"],
-            ],
-            font_name,
-        ),
-        Spacer(1, 0.35 * cm),
-        Paragraph("2. Phương pháp dự báo", h1),
-        Paragraph(
-            "Vì dữ liệu chỉ có một biến đầu vào là điểm giữa kỳ, mô hình được chọn là hồi quy tuyến tính một biến, "
-            "nhưng được cài đặt bằng TensorFlow dưới dạng computational graph. Graph gồm lớp Normalization để chuẩn hóa "
-            "điểm giữa kỳ và lớp Dense(1) để tính đầu ra tuyến tính. TensorFlow thực hiện forward pass, tính MSE loss, "
-            "tự động lấy gradient bằng autodiff và cập nhật tham số bằng SGD.",
-            body,
-        ),
-        Spacer(1, 0.15 * cm),
-        Paragraph("Công thức forward của computational graph:", h2),
-        Paragraph(
-            "Đầu vào x được chuẩn hóa thành z = (x - mean(x)) / std(x). Mô hình trong graph là ŷ = b + wz. "
-            "Loss trên một batch là L = mean((ŷ - y)^2).",
-            body,
-        ),
-        Paragraph(
-            "Về mặt toán học, lan truyền ngược tương đương với đạo hàm: dL/dw = 2/n Σ(ŷi - yi)zi "
-            "và dL/db = 2/n Σ(ŷi - yi). Trong code, TensorFlow GradientTape/autodiff thực hiện phần tính gradient này "
-            "bên trong quá trình model.fit(). Cập nhật tham số do SGD thực hiện: w = w - α dL/dw, b = b - α dL/db.",
-            body,
-        ),
-        Spacer(1, 0.15 * cm),
-        Paragraph("Mô hình dự báo thu được:", h2),
-        Paragraph(f"Dạng graph đã chuẩn hóa: <b>{graph_formula}</b>", body),
-        Paragraph(f"<b>{formula}</b>", body),
-        Paragraph(
-            f"Trong chương trình, điểm dự báo được giới hạn trong miền hợp lệ từ 0 đến 10: <b>{clipped_formula}</b>.",
-            body,
-        ),
-        Spacer(1, 0.25 * cm),
-        Image(str(computation_graph), width=15.5 * cm, height=7.4 * cm),
-        Spacer(1, 0.2 * cm),
-        Paragraph("3. Kết quả thực nghiệm", h1),
-        make_table(
-            [
-                ["MAE", f"{metrics['MAE']:.4f}"],
-                ["MSE", f"{metrics['MSE']:.4f}"],
-                ["RMSE", f"{metrics['RMSE']:.4f}"],
-                ["R²", f"{metrics['R2']:.4f}"],
-            ],
-            font_name,
-        ),
-        Spacer(1, 0.2 * cm),
-        Paragraph(
-            "MAE cho biết sai số tuyệt đối trung bình theo thang điểm. RMSE phạt mạnh hơn các dự đoán sai nhiều. "
-            "R² thể hiện tỷ lệ biến thiên của điểm cuối kỳ được mô hình giải thích bởi điểm giữa kỳ.",
-            body,
-        ),
-        PageBreak(),
-        Paragraph("4. Đồ thị", h1),
-        Paragraph("Đồ thị phân tán và đường hồi quy:", h2),
-        Image(str(regression_plot), width=15.5 * cm, height=9.7 * cm),
-        Spacer(1, 0.3 * cm),
-        Paragraph("Đồ thị sai số trên tập kiểm tra:", h2),
-        Image(str(residual_plot), width=15.5 * cm, height=8.8 * cm),
-        Spacer(1, 0.3 * cm),
-        Paragraph("Đồ thị loss trong quá trình huấn luyện graph:", h2),
-        Image(str(loss_plot), width=15.5 * cm, height=8.8 * cm),
-        Spacer(1, 0.25 * cm),
-        Paragraph("5. Cách chạy chương trình", h1),
-        Paragraph(
-            "Cài các thư viện trong requirements.txt rồi chạy lệnh: "
-            "<b>python src/final_score_prediction.py --midterm 7.5</b>. "
-            "Nếu không truyền --midterm, chương trình vẫn huấn luyện mô hình và sinh toàn bộ artifact trong thư mục outputs.",
-            body,
-        ),
-        Spacer(1, 0.2 * cm),
-        Paragraph("6. Kết luận", h1),
-        Paragraph(
-            "Mô hình hồi quy tuyến tính phù hợp với yêu cầu bài tập vì minh bạch, dễ giải thích và tạo ra công thức dự báo trực tiếp. "
-            "Khi có thêm dữ liệu như chuyên cần, bài tập hoặc số lần vắng, có thể mở rộng sang hồi quy đa biến để cải thiện độ chính xác.",
-            body,
-        ),
-    ]
-    doc.build(story)
-
-
-def make_table(rows: list[list[object]], font_name: str) -> Table:
-    table = Table(rows, colWidths=[6.2 * cm, 8.8 * cm])
-    table.setStyle(
-        TableStyle(
-            [
-                ("FONTNAME", (0, 0), (-1, -1), font_name),
-                ("FONTSIZE", (0, 0), (-1, -1), 10),
-                ("BACKGROUND", (0, 0), (0, -1), colors.HexColor("#EEF2FF")),
-                ("TEXTCOLOR", (0, 0), (-1, -1), colors.HexColor("#111827")),
-                ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#CBD5E1")),
-                ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-                ("LEFTPADDING", (0, 0), (-1, -1), 8),
-                ("RIGHTPADDING", (0, 0), (-1, -1), 8),
-                ("TOPPADDING", (0, 0), (-1, -1), 6),
-                ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
-            ]
-        )
-    )
-    return table
-
-
-def run(midterm: float | None = None, github_url: str | None = None) -> dict[str, object]:
+def run(midterm: float | None = None) -> dict[str, object]:
     OUTPUT_DIR.mkdir(exist_ok=True)
     df = read_dataset(DATA_PATH)
     train_df, test_df = split_train_test(df)
@@ -582,7 +380,6 @@ def run(midterm: float | None = None, github_url: str | None = None) -> dict[str
     residual_plot = OUTPUT_DIR / "residual_plot.png"
     loss_plot = OUTPUT_DIR / "loss_plot.png"
     computation_graph = OUTPUT_DIR / "computation_graph.png"
-    report_pdf = OUTPUT_DIR / "thuyet_minh_du_bao_diem_cuoi_ky.pdf"
 
     save_regression_plot(df, model, regression_plot)
     save_residual_plot(test_df, test_pred, residual_plot)
@@ -610,7 +407,7 @@ def run(midterm: float | None = None, github_url: str | None = None) -> dict[str
         },
         "metrics": metrics,
         "training": {
-            "method": "tensorflow_computational_graph_sgd",
+            "method": "tensorflow_computational_graph_batch_gradient_descent",
             "loss_first": model.losses[0],
             "loss_last": model.losses[-1],
         },
@@ -622,27 +419,12 @@ def run(midterm: float | None = None, github_url: str | None = None) -> dict[str
     with (OUTPUT_DIR / "metrics.json").open("w", encoding="utf-8") as file:
         json.dump(result, file, ensure_ascii=False, indent=2)
 
-    make_report(
-        report_pdf,
-        df,
-        train_df,
-        test_df,
-        model,
-        metrics,
-        regression_plot,
-        residual_plot,
-        loss_plot,
-        computation_graph,
-        github_url or get_github_url(),
-    )
-    result["report_pdf"] = str(report_pdf)
     return result
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Du bao diem cuoi ky dua tren diem giua ky.")
     parser.add_argument("--midterm", type=float, default=None, help="Diem giua ky can du bao, trong khoang 0-10.")
-    parser.add_argument("--github-url", type=str, default=None, help="Link GitHub dua vao ban thuyet minh PDF.")
     return parser.parse_args()
 
 
@@ -650,7 +432,7 @@ def main() -> None:
     args = parse_args()
     if args.midterm is not None and not 0 <= args.midterm <= 10:
         raise ValueError("--midterm must be between 0 and 10.")
-    result = run(args.midterm, args.github_url)
+    result = run(args.midterm)
     print(json.dumps(result, ensure_ascii=False, indent=2))
 
 

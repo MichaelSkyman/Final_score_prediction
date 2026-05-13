@@ -19,7 +19,7 @@
     "R2": 0.9999987950385494
   },
   "training": {
-    "method": "tensorflow_computational_graph_sgd",
+    "method": "tensorflow_computational_graph_batch_gradient_descent",
     "loss_first": 38.41042709350586,
     "loss_last": 8.297817657876294e-06
   },

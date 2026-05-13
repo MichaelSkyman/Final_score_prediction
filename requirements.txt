@@ -1,6 +1,8 @@
 pandas
 numpy
 openpyxl
-reportlab
 pillow
 tensorflow
+nbformat
+nbclient
+ipykernel
