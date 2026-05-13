@@ -1,0 +1,28 @@
+{
+  "dataset": "D:\\Final_score_prediction\\data\\TRAIN2.xlsx",
+  "n_samples": 515,
+  "n_train": 412,
+  "n_test": 103,
+  "formula": {
+    "intercept": 2.001953568869337,
+    "slope": 0.8000152129464494,
+    "graph_bias": 6.106090068817139,
+    "graph_weight": 2.30195951461792,
+    "feature_mean": 5.130073070526123,
+    "feature_std": 2.877394676208496,
+    "text": "final = 2.001954 + 0.800015 * midterm"
+  },
+  "metrics": {
+    "MAE": 0.002295660290303627,
+    "MSE": 7.344516357170012e-06,
+    "RMSE": 0.0027100768175773197,
+    "R2": 0.9999987950385494
+  },
+  "training": {
+    "method": "tensorflow_computational_graph_sgd",
+    "loss_first": 38.41042709350586,
+    "loss_last": 8.297817657876294e-06
+  },
+  "input_midterm": 7.5,
+  "predicted_final": 8.002067665967708
+}
